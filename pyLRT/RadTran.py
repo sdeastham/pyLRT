@@ -15,12 +15,13 @@ class RadTran():
 
     Set the verbose option to retrieve the verbose output from UVSPEC.'''
 
-    def __init__(self, folder):
+    def __init__(self, folder, env=None):
         '''Create a radiative transfer object.
         folder - the folder where libradtran was compiled/installed'''
         self.folder = folder
         self.options = {}
         self.cloud = None
+        self.env = env
 
     def run(self, verbose=False, print_input=False, print_output=False, regrid=True, quiet=False):
         '''Run the radiative transfer code
@@ -63,7 +64,7 @@ class RadTran():
         os.chdir(os.path.join(self.folder, 'bin'))
 
         process = subprocess.run([os.getcwd()+'/uvspec'], stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, env=self.env,
                                  input=inputstr, encoding='ascii')
         os.chdir(cwd)
 
