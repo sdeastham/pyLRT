@@ -21,20 +21,23 @@ class RadTran():
         self.folder = folder
         self.options = {}
         self.cloud = None
+        self.icecloud = None
         self.env = env
 
-    def run(self, verbose=False, print_input=False, print_output=False, regrid=True, quiet=False):
+    def run(self, verbose=False, print_input=False, print_output=False, regrid=True, quiet=False, debug=False):
         '''Run the radiative transfer code
         - verbose - retrieves the output from a verbose run, including atmospheric
                     structure and molecular absorption
         - print_input - print the input file used to run libradtran
         - print_output - echo the output
         - regrid - converts verbose output to the regrid/output grid, best to leave as True
-        - quiet - if True, do not print UVSPEC warnings'''
+        - quiet - if True, do not print UVSPEC warnings
+        - debug - dump ALL output (stdout and stderr) to terminal'''
         if self.cloud:  # Create cloud file
             tmpcloud = tempfile.NamedTemporaryFile(delete=False)
             cloudstr = '\n'.join([
-                ' {:4.2f} {:4.2f} {:4.2f}'.format(
+                ' {:8.5f} {:7.5f} {:7.5f}'.format( # was 4.2
+                #' {:4.2f} {:4.2f} {:4.2f}'.format( # was 4.2
                     self.cloud['z'][alt],
                     self.cloud['lwc'][alt],
                     self.cloud['re'][alt])
@@ -42,6 +45,19 @@ class RadTran():
             tmpcloud.write(cloudstr.encode('ascii'))
             tmpcloud.close()
             self.options['wc_file 1D'] = tmpcloud.name
+
+        if self.icecloud:  # Create cloud file
+            tmpicecloud = tempfile.NamedTemporaryFile(delete=False)
+            icecloudstr = '\n'.join([
+                ' {:8.5f} {:7.5f} {:7.5f}'.format( # was 4.2
+                #' {:4.2f} {:4.2f} {:4.2f}'.format( # was 4.2
+                    self.icecloud['z'][alt],
+                    self.icecloud['iwc'][alt],
+                    self.icecloud['re'][alt])
+                for alt in range(len(self.icecloud['iwc']))])
+            tmpicecloud.write(icecloudstr.encode('ascii'))
+            tmpicecloud.close()
+            self.options['ic_file 1D'] = tmpicecloud.name
 
         if verbose:
             try:
@@ -58,6 +74,10 @@ class RadTran():
                 print('Cloud')
                 print('  Alt  LWC   Re')
                 print(cloudstr)
+            if self.icecloud:
+                print('Ice Cloud')
+                print('  Alt  IWC   Re')
+                print(icecloudstr)
             print('')
 
         cwd = os.getcwd()
@@ -71,6 +91,18 @@ class RadTran():
         if self.cloud:
             os.remove(tmpcloud.name)
             del(self.options['wc_file 1D'])
+
+        if self.icecloud:
+            os.remove(tmpicecloud.name)
+            del(self.options['ic_file 1D'])
+
+        if debug:
+            print('DEBUG: stdout')
+            for line in io.StringIO(process.stdout):
+                print(line.strip())
+            print('DEBUG: stderr')
+            for line in io.StringIO(process.stderr):
+                print(line.strip())
 
         # Check uvspec output for errors/warnings
         if not quiet:
