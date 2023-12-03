@@ -19,10 +19,85 @@ class RadTran():
         '''Create a radiative transfer object.
         folder - the folder where libradtran was compiled/installed'''
         self.folder = folder
-        self.options = {}
+        self.options = {'data_files_path': '../data'}
         self.cloud = None
         self.icecloud = None
+        self.atm_profile = None
         self.env = env
+
+    def setup_atmosphere_from_reference(self):
+        import pandas as pd
+        z_vec = self.atm_profile['z']
+        p_vec = self.atm_profile['p']
+        T_vec = self.atm_profile['T']
+        # Use data from outside the given profile?
+        extrap = self.atm_profile['extrap']
+        if self.atm_profile['ref'] is not None:
+            reference = self.atm_profile['ref']
+        else:
+            reference = 'afglus.dat'
+        headers = ['z(km)','p(mb)','T(K)','air(cm-3)','o3(cm-3)','o2(cm-3)','h2o(cm-3)','co2(cm-3)','no2(cm-3)']
+        df = pd.read_csv(os.path.join(self.options['data_files_path'],'atmmod',reference),comment='#',
+                         delimiter='\s+',names=headers)
+
+        # After changing temperatures etc, we want the VMRs to be consistent
+        vmr = {}
+        airden = df['air(cm-3)']
+        for spc in ['o3','o2','h2o','co2','no2']:
+            vmr[spc] = df[spc + '(cm-3)'] / airden
+        # T in K, p in mbar/hPa, z in km
+        # Verify that z_vec is monotonically decreasing
+        assert np.all(z_vec[1:]<z_vec[:-1]), 'Z data must be monotonically decreasing'
+        
+        z_ref = df['z(km)'].values
+
+        data_src = {'z(km)': z_vec, 'p(mb)': p_vec, 'T(K)': T_vec}
+        if extrap:
+            # Take the original z vector and add in layers for the new data
+            z_in_min = z_vec[-1]
+            if z_in_min <= np.min(z_ref) or np.abs(z_in_min) < 1.0e-5:
+                data_below = []
+            else:
+                i_first = np.argmax(z_ref < z_in_min)
+                data_below = list(range(i_first,len(z_ref)))
+            z_in_max = z_vec[0]
+            if z_in_max > np.max(z_ref):
+                data_above = []
+            else:
+                i_last = np.argmax(z_ref <= z_in_max)
+                data_above = list(range(i_last))
+            n_below = len(data_below)
+            n_above = len(data_above)
+            n_new   = len(z_vec)
+            full_len = n_above + n_new + n_below
+            
+            data = {}
+            for var, vec_src in data_src.items():
+                vec_ref = df[var].values
+                vec = np.zeros(n_below+n_new+n_above)
+                vec[:n_above] = vec_ref[data_above]
+                vec[n_above:(n_above+n_new)] = vec_src
+                vec[(n_above + n_new):] = vec_ref[data_below]
+                data[var] = vec
+        else:
+            data = data_src
+        
+        # Calculate air number density
+        boltzmann_constant_k = 1.380649e-23 # J/K
+        molec_per_cm3 = 1e-6 * data['p(mb)'] * 1.0e2/(data['T(K)'] * boltzmann_constant_k)
+        data['air(cm-3)'] = molec_per_cm3
+        
+        # Re-derive the species concentrations at the interpolation points
+        conc = {}
+        z_vec_full = data['z(km)']
+        for spc, vmr_vec in vmr.items():
+            vmr_interp_vec = np.interp(z_vec_full,z_ref,vmr_vec)
+            conc[spc] = vmr_interp_vec * molec_per_cm3
+        
+        for spc in conc.keys():
+            data[spc + '(cm-3)'] = conc[spc]
+        df_out = pd.DataFrame(data)
+        return df_out
 
     def run(self, verbose=False, print_input=False, print_output=False, regrid=True, quiet=False, debug=False):
         '''Run the radiative transfer code
@@ -58,6 +133,23 @@ class RadTran():
             tmpicecloud.write(icecloudstr.encode('ascii'))
             tmpicecloud.close()
             self.options['ic_file 1D'] = tmpicecloud.name
+
+        if self.atm_profile:  # Create atmospheric profile of physical properties
+            import csv
+            # Need z in km, p in hPa/mb, T in K. "ref" is the reference file - set to "None"
+            # to just use the US standard atmosphere
+            df_atm = self.setup_atmosphere_from_reference()
+            # Reformat - assumes that fixed-width is not required
+            # Original file gave Z, p, and T as floats, but everything else in exponential notation
+            formats = {'z(km)': '{:08.3f}', 'p(mb)': '{:010.5f}', 'T(K)': '{:08.3f}'}
+            df_formatted = df_atm.copy()
+            for col, f in formats.items():
+                df_formatted[col] = df_atm[col].map(lambda x: f.format(x))
+            tmpatm = tempfile.NamedTemporaryFile(delete=False)
+            df_formatted.to_csv(tmpatm,sep=' ',header=False,index=False,
+                                float_format='%10.6E',quoting=csv.QUOTE_NONE)
+            tmpatm.close()
+            self.options['atmosphere_file'] = tmpatm.name
 
         if verbose:
             try:
